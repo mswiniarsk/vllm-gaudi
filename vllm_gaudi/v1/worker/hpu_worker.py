@@ -287,6 +287,8 @@ class HPUWorker(WorkerBase):
                 self.step_profiler = None
                 raise RuntimeError('Step profiling finished!')
         self.step += 1
+        print(f"Step {self.step} completed")
+
         return output if self.rank == 0 else None
 
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
