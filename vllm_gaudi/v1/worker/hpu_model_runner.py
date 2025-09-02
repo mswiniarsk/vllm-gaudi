@@ -1628,8 +1628,8 @@ class HPUModelRunner:
         token_ids = torch.zeros((padded_batch_size, 1), dtype=torch.int32)
         token_ids[:num_decodes] = torch.gather(input=torch.from_numpy(
             self.input_batch.token_ids_cpu),
-                                               dim=1,
-                                               index=index)
+            dim=1,
+            index=index)
 
         # SLOT_MAPPING [batch, 1]
         # The "slot" is the "physical index" of a token in the KV cache.
@@ -1962,6 +1962,7 @@ class HPUModelRunner:
         scheduler_output: "SchedulerOutput",
         warmup_mode: bool = False,
     ) -> Union[ModelRunnerOutput, AsyncModelRunnerOutput]:
+        logger.info("execute_model: Starting execute_model")
         # NOTE(kzawora): Since scheduler doesn't differentiate between prefills
         # and decodes, we must handle mixed batches. In _update_states we make
         # sure that first self.input_batch.num_decodes requests are decodes,
@@ -2037,23 +2038,33 @@ class HPUModelRunner:
                 self.defragmenter.defragment()
 
         batch_changed = self._update_states(scheduler_output)
+        logger.info("execute_model: Updated states, batch_changed=%s",
+                    batch_changed)
         if not scheduler_output.total_num_scheduled_tokens:
             # Return empty ModelRunnerOuptut if there's no work to do.
+            logger.info("execute_model: No work to do, returning empty output")
             return EMPTY_MODEL_RUNNER_OUTPUT
         # If necessary, swap decodes/prompts to have all decodes on the start
         ensure_decodes_first(self.input_batch)
         # Prepare prompts/decodes info
         pd_info = self._get_prompts_and_decodes(scheduler_output)
+        logger.info("execute_model: Got %d decodes, %d prompts",
+                    len(pd_info.decode_req_ids), len(pd_info.prompt_req_ids))
         num_decodes = len(pd_info.decode_req_ids)
         num_prefills = len(pd_info.prompt_req_ids)
         num_reqs = num_decodes + num_prefills
         with self.profiler.record_event('internal', 'prepare_input_tensors'):
             # Handle async scheduling input preparation
+            logger.info("execute_model: Starting input preparation, "
+                        "async_scheduling=%s", self.use_async_scheduling)
             if self.use_async_scheduling:
+                logger.debug("execute_model: Preparing async scheduling inputs")
                 self._prepare_input_ids_for_async_scheduling()
 
+            logger.info("execute_model: Preparing input tensors")
             prefill_data, decode_data = self._prepare_inputs(
                 scheduler_output, num_prefills, num_decodes)
+            logger.info("execute_model: Input preparation completed")
         # FIXME(kzawora): Currently there's no handling of logprobs. Fix that
         # later.
         prefill_sampled_token_ids = []
@@ -2338,16 +2349,21 @@ class HPUModelRunner:
         ################## RETURN ##################
         # Create output.
         all_req_ids = pd_info.decode_req_ids + pd_info.prompt_req_ids
+        logger.info("execute_model: Creating output with %d requests",
+                    len(all_req_ids))
         # prompt_logprobs_dict: dict[
         #    str, Optional[LogprobsTensors]] = self._get_prompt_logprobs_dict(
         #        prefill_hidden_states_device, scheduler_output)
         prompt_logprobs_dict: dict[str, Optional[LogprobsTensors]] = {}
-        all_req_ids = pd_info.decode_req_ids + pd_info.prompt_req_ids
         logprobs = None
 
+        # Create the correct req_id_to_index mapping for all_req_ids
+        req_id_to_index = {req_id: i for i, req_id in enumerate(all_req_ids)}
+
+        logger.debug("execute_model: Creating ModelRunnerOutput")
         model_runner_output = ModelRunnerOutput(
             req_ids=all_req_ids,
-            req_id_to_index=self.input_batch.req_id_to_index,
+            req_id_to_index=req_id_to_index,
             sampled_token_ids=postprocessed_sampled_token_ids,
             logprobs=logprobs,
             prompt_logprobs_dict=prompt_logprobs_dict,  # type: ignore[arg-type]
@@ -2356,17 +2372,21 @@ class HPUModelRunner:
 
         if self.use_async_scheduling:
             # Return AsyncModelRunnerOutput for HPU async scheduling
+            logger.info("execute_model: Creating AsyncModelRunnerOutput")
             fallback_tensor = torch.empty((0, 1),
                                           dtype=torch.int32,
                                           device=self.device)
-            return AsyncModelRunnerOutput(
+            async_output = AsyncModelRunnerOutput(
                 model_runner_output=model_runner_output,
                 sampled_token_ids=(sampled_token_ids_hpu
                                    if sampled_token_ids_hpu is not None else
                                    fallback_tensor),
                 invalid_req_indices=[],  # HPU handles this differently
             )
+            logger.info("execute_model: Returning AsyncModelRunnerOutput")
+            return async_output
         else:
+            logger.info("execute_model: Returning regular ModelRunnerOutput")
             return model_runner_output
 
     def load_model(self) -> None:
