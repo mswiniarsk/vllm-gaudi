@@ -173,7 +173,7 @@ def partial_attn_shared(query: torch.tensor, blocks: torch.tensor, bias: Optiona
     attn = torch.exp(attn - local_max.unsqueeze(-1))
     local_sum = attn.sum(-1)
     attn = torch.matmul(attn, value).flatten(0, 1)
-    return attn.transpose(0, 1), local_max.flatten(0, 1).transpose(0, 1), local_sum.flatten(0,1).transpose(0, 1)
+    return attn.transpose(0, 1), local_max.flatten(0, 1).transpose(0, 1), local_sum.flatten(0, 1).transpose(0, 1)
 
 
 def partial_attn_unique(query: torch.tensor, blocks: torch.tensor, block_mapping: torch.tensor,
